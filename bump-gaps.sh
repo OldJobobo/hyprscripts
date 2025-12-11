@@ -8,6 +8,16 @@
 #
 # Default step is 1 if not provided; bumps to gaps_out are multiplied by 2.
 
+if ! command -v hyprctl >/dev/null 2>&1; then
+  echo "hyprctl is required (Hyprland tools not found)" >&2
+  exit 1
+fi
+
+if ! hyprctl -j monitors >/dev/null 2>&1; then
+  echo "hyprctl is not responding (is Hyprland running?)" >&2
+  exit 1
+fi
+
 TARGET="$1"        # in | out
 DIR="$2"           # + | -
 STEP="${3:-1}"     # default 1 if omitted
@@ -52,64 +62,44 @@ OPT="general:gaps_$TARGET"
 
 # --- Compute new values and apply -----------------------------------------
 
-NEW_VALUE=$(
-  DELTA="$DELTA" OPT="$OPT" python3 <<'PY' 2>/dev/null
-import json, re, subprocess, os, sys
+read_nums_json() {
+  local out
+  out=$(hyprctl -j getoption "$OPT" 2>/dev/null | tr '\n' ' ') || return 1
+  [[ -z "$out" ]] && return 1
 
-opt = os.environ["OPT"]
-delta = int(os.environ["DELTA"])
+  if [[ $out =~ \"custom\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ $out =~ \"int\"[[:space:]]*:[[:space:]]*(-?[0-9]+) ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
 
-def parse_json():
-    try:
-        out = subprocess.check_output(["hyprctl", "-j", "getoption", opt], text=True, stderr=subprocess.DEVNULL)
-        data = json.loads(out)
-    except Exception:
-        return None
+read_nums_plain() {
+  local out
+  out=$(hyprctl getoption "$OPT" 2>/dev/null) || return 1
+  echo "$out" | grep -Eo '-?[0-9]+' | paste -sd' ' -
+}
 
-    nums = []
-    def collect(obj):
-        nonlocal nums
-        if isinstance(obj, dict):
-            # Prefer explicit custom vec (e.g., "1 1 1 1"), then int fallback.
-            if "custom" in obj:
-                found = re.findall(r'-?\d+', str(obj["custom"]))
-                if found:
-                    nums[:] = [int(x) for x in found]
-                    return
-            if "int" in obj:
-                val = obj["int"]
-                if isinstance(val, (int, float)):
-                    nums[:] = [int(val)]
-                    return
-                if isinstance(val, str) and val.lstrip("-").isdigit():
-                    nums[:] = [int(val)]
-                    return
-            for v in obj.values():
-                if nums:
-                    return
-                collect(v)
-        elif isinstance(obj, list):
-            for v in obj:
-                if nums:
-                    return
-                collect(v)
-    collect(data)
-    return nums or None
+NUMS=$(read_nums_json)
+if [ -z "$NUMS" ]; then
+  NUMS=$(read_nums_plain)
+fi
+[ -z "$NUMS" ] && NUMS="0"
 
-def parse_plain():
-    try:
-        out = subprocess.check_output(["hyprctl", "getoption", opt], text=True, stderr=subprocess.DEVNULL)
-    except Exception:
-        return None
-    found = re.findall(r'-?\d+', out)
-    if found:
-        return [int(x) for x in found]
-    return None
+NEW=()
+for n in $NUMS; do
+  val=$(( n + DELTA ))
+  [ "$val" -lt 0 ] && val=0
+  NEW+=( "$val" )
+done
 
-nums = parse_json() or parse_plain() or [0]
-new = [max(0, n + delta) for n in nums]
-print(" ".join(str(x) for x in new))
-PY
-)
+NEW_VALUE="${NEW[*]}"
 
-hyprctl keyword "$OPT" "$NEW_VALUE" >/dev/null
+if ! hyprctl keyword "$OPT" "$NEW_VALUE" >/dev/null; then
+  echo "Failed to apply $OPT=$NEW_VALUE" >&2
+  exit 1
+fi
