@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
+ACTIVE="$CFG_DIR/starship.toml"
+DRAC="$CFG_DIR/starship.drac-pill"
+DHH="$CFG_DIR/starship.dhh"
+
+notify() {
+  local msg="$1"
+  if command -v makoctl >/dev/null 2>&1; then
+    # mako is common on Hyprland/Wayland
+    notify-send "Starship" "$msg"
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send "Starship" "$msg"
+  else
+    echo "$msg"
+  fi
+}
+
+[[ -f "$DRAC" ]] || { echo "Missing: $DRAC" >&2; exit 1; }
+[[ -f "$DHH"  ]] || { echo "Missing: $DHH"  >&2; exit 1; }
+
+# If starship.toml is a symlink, read where it points.
+current_target=""
+if [[ -L "$ACTIVE" ]]; then
+  current_target="$(readlink "$ACTIVE")"
+fi
+
+abs() { python - <<'PY' "$1"
+import os,sys
+print(os.path.abspath(os.path.expanduser(sys.argv[1])))
+PY
+}
+
+DRAC_ABS="$(abs "$DRAC")"
+DHH_ABS="$(abs "$DHH")"
+
+if [[ -n "$current_target" ]]; then
+  [[ "$current_target" == /* ]] || current_target="$CFG_DIR/$current_target"
+  current_target="$(abs "$current_target")"
+fi
+
+# If it's not a symlink yet (regular file), back it up once, then convert.
+if [[ ! -L "$ACTIVE" ]]; then
+  cp -f "$ACTIVE" "$CFG_DIR/starship.toml.bak.$(date +%Y%m%d-%H%M%S)"
+  rm -f "$ACTIVE"
+  ln -s "$DRAC" "$ACTIVE"
+  notify "Theme set to drac-pill (initialized symlink)."
+  exit 0
+fi
+
+# Toggle
+if [[ "$current_target" == "$DRAC_ABS" ]]; then
+  ln -sfn "$DHH" "$ACTIVE"
+  notify "Theme set to dhh."
+else
+  ln -sfn "$DRAC" "$ACTIVE"
+  notify "Theme set to drac-pill."
+fi
